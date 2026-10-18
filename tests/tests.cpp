@@ -574,6 +574,64 @@ TEST(serialization_rejects_shape_mismatch) {
     REQUIRE(threw);
 }
 
+// --- CNN checkpoint round-trip (Conv2d params included) -------------------
+
+namespace {
+
+struct TinyCNN : nn::Module {
+    nn::Conv2d c{1, 4, 3, 1, 1};
+    nn::MaxPool2d p{2};
+    nn::ReLU relu;
+    nn::Linear fc{4 * 14 * 14, 3};
+
+    nn::Var forward(nn::Var x) override {
+        x = nn::reshape_v(x, {x->data.dim(0), 1, 28, 28});
+        x = p.forward(relu.forward(c.forward(x)));
+        x = nn::reshape_v(x, {x->data.dim(0), 4 * 14 * 14});
+        return fc.forward(x);
+    }
+
+    std::vector<nn::Var> parameters() override {
+        auto ps = c.parameters();
+        for (auto& p : fc.parameters()) ps.push_back(p);
+        return ps;
+    }
+
+    std::vector<std::pair<std::string, nn::Var>> named_parameters() override {
+        std::vector<std::pair<std::string, nn::Var>> ps;
+        for (auto& [n, p] : c.named_parameters()) ps.push_back({"c." + n, p});
+        for (auto& [n, p] : fc.named_parameters()) ps.push_back({"fc." + n, p});
+        return ps;
+    }
+};
+
+} // namespace
+
+TEST(cnn_checkpoint_round_trip) {
+    nn::set_seed(11);
+    TinyCNN a;
+    nn::Tensor x = nn::Tensor::randu({5, 784});
+    nn::Var out_a = a.forward(nn::constant(x));
+    nn::save_model(a, "/tmp/nn_cnn_ckpt_test.nns1");
+
+    nn::set_seed(999); // different init
+    TinyCNN b;
+    nn::load_model(b, "/tmp/nn_cnn_ckpt_test.nns1");
+
+    auto pa = a.named_parameters();
+    auto pb = b.named_parameters();
+    REQUIRE(pa.size() == pb.size());
+    for (size_t i = 0; i < pa.size(); ++i) {
+        REQUIRE(pa[i].first == pb[i].first);
+        REQUIRE(pa[i].second->data.same_shape(pb[i].second->data));
+        for (int64_t j = 0; j < pa[i].second->data.numel(); ++j)
+            REQUIRE_NEAR(pa[i].second->data[j], pb[i].second->data[j], 1e-9);
+    }
+    nn::Var out_b = b.forward(nn::constant(x));
+    for (int64_t j = 0; j < out_a->data.numel(); ++j)
+        REQUIRE_NEAR(out_a->data[j], out_b->data[j], 1e-6);
+}
+
 } // namespace
 
 int main() {

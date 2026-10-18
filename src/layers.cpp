@@ -16,8 +16,7 @@ Var Linear::forward(Var x) { return linear(x, weight, bias); }
 
 Dropout::Dropout(float prob) : p(prob) {}
 
-Var Dropout::forward(Var x) {
-    if (!training || p <= 0.0f) return x;
+Var Dropout::forward(Var x) {    if (!training || p <= 0.0f) return x;
     if (p >= 1.0f) return mul_scalar(x, 0.0f);
     Tensor mask = Tensor::randu(x->data.shape());
     const float keep = 1.0f - p;
@@ -30,6 +29,12 @@ Var Sequential::forward(Var x) {
     for (auto& m : layers) x = m->forward(x);
     return x;
 }
+
+LayerNorm::LayerNorm(int features, float eps)
+    : features(features), eps(eps), gamma(make_var(Tensor::ones({features}))),
+      beta(make_var(Tensor::zeros({features}))) {}
+
+Var LayerNorm::forward(Var x) { return layernorm_v(x, gamma, beta, eps); }
 
 std::vector<Var> Sequential::parameters() {
     std::vector<Var> ps;

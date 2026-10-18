@@ -59,6 +59,21 @@ struct Dropout : Module {
     Var forward(Var x) override;
 };
 
+// Normalises over the last dim of [N, C] with learnable scale and shift.
+struct LayerNorm : Module {
+    int features;
+    float eps;
+    Var gamma; // [C], init ones
+    Var beta;  // [C], init zeros
+
+    explicit LayerNorm(int features, float eps = 1e-5f);
+    Var forward(Var x) override;
+    std::vector<Var> parameters() override { return {gamma, beta}; }
+    std::vector<std::pair<std::string, Var>> named_parameters() override {
+        return {{"gamma", gamma}, {"beta", beta}};
+    }
+};
+
 // Chains modules: out = m_n(...m_2(m_1(x))).
 struct Sequential : Module {
     std::vector<std::shared_ptr<Module>> layers;

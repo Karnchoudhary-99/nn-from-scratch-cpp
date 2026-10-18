@@ -310,6 +310,65 @@ TEST(schedulers_exponential_lr) {
     REQUIRE_NEAR(opt.get_lr(), 0.081, 1e-6);
 }
 
+// --- layernorm tests --------------------------------------------------------
+
+TEST(layernorm_forward) {
+    nn::set_seed(1);
+    nn::Var x = nn::make_var(nn::Tensor({2, 4}, {1, 2, 3, 4, 2, 4, 6, 8}));
+    nn::Var g = nn::make_var(nn::Tensor::ones({4}));
+    nn::Var b = nn::make_var(nn::Tensor::zeros({4}));
+    nn::Var y = nn::layernorm_v(x, g, b, 0.0f);
+    // row 0: mean 2.5, var 1.25, std ~1.118 -> [-1.3416, -0.4472, 0.4472, 1.3416]
+    REQUIRE_NEAR(y->data.at({0, 0}), -1.3416407, 1e-4);
+    REQUIRE_NEAR(y->data.at({0, 3}), 1.3416407, 1e-4);
+    // per-row mean ~0, variance ~1
+    for (int64_t r = 0; r < 2; ++r) {
+        float m = 0.0f, v = 0.0f;
+        for (int64_t j = 0; j < 4; ++j) m += y->data.at({r, j});
+        m /= 4.0f;
+        for (int64_t j = 0; j < 4; ++j) {
+            float d = y->data.at({r, j}) - m;
+            v += d * d;
+        }
+        REQUIRE_NEAR(m, 0.0, 1e-5);
+        REQUIRE_NEAR(v / 4.0f, 1.0, 1e-4);
+    }
+}
+
+TEST(layernorm_gradcheck) {
+    nn::set_seed(3);
+    gradcheck(
+        "layernorm",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(nn::layernorm_v(v[0], v[1], v[2]));
+        },
+        {small({2, 5}, -2.0f, 2.0f), small({5}, 0.5f, 1.5f),
+         small({5}, -0.5f, 0.5f)});
+}
+
+TEST(layernorm_train_recover) {
+    // LayerNorm inside an MLP still trains XOR to convergence.
+    nn::set_seed(11);
+    nn::Sequential model;
+    model.add<nn::Linear>(2, 16);
+    model.add<nn::LayerNorm>(16);
+    model.add<nn::ReLU>();
+    model.add<nn::Linear>(16, 2);
+    auto ds = nn::make_xor(400);
+    nn::DataLoader loader(ds, 32, true);
+    nn::Adam opt(model.parameters(), 1e-2f);
+    auto cfg = nn::TrainConfig{};
+    cfg.epochs = 60;
+    cfg.verbose = false;
+    nn::train_classifier(
+        model, loader, opt,
+        [](nn::Var logits, const std::vector<int>& y) {
+            return nn::cross_entropy(logits, y);
+        },
+        cfg);
+    REQUIRE(nn::accuracy(model, ds) > 0.95f);
+}
+
 // --- serialization tests -------------------------------------------------
 
 static std::unique_ptr<nn::Sequential> make_small_mlp() {

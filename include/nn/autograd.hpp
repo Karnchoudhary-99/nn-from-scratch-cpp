@@ -65,6 +65,10 @@ Var sum_all(Var a);
 Var mean_all(Var a);
 Var softmax_rows_v(Var a);
 
+// Layer normalisation over the last dim: out = (x - mu)/sqrt(var + eps) * g + b.
+// Shapes: x [N, C], gamma [C], beta [C].
+Var layernorm_v(Var x, Var gamma, Var beta, float eps = 1e-5f);
+
 // Fused linear layer op: out = x @ w + b (b broadcast over rows).
 Var linear(Var x, Var w, Var b);
 

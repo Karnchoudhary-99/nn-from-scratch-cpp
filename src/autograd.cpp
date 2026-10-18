@@ -1,6 +1,7 @@
 // Autograd engine implementation.
 #include "nn/autograd.hpp"
 
+#include <cmath>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -232,6 +233,85 @@ Var softmax_rows_v(Var a) {
         a->accumulate_grad(unbroadcast(ga, a->data.shape()));
     });
     return out;
+}
+
+// --- layer norm ------------------------------------------------------------
+
+Var layernorm_v(Var x, Var gamma, Var beta, float eps) {
+    const Tensor& xd = x->data;
+    if (xd.ndim() != 2)
+        throw std::invalid_argument("layernorm_v: only [N, C] supported");
+    const int64_t n = xd.dim(0), c = xd.dim(1);
+    if (gamma->data.numel() != c || beta->data.numel() != c)
+        throw std::invalid_argument("layernorm_v: gamma/beta must be [C]");
+    const float* src = xd.data_.data();
+    const float* gd_ = gamma->data.data_.data();
+    const float* bd = beta->data.data_.data();
+
+    Tensor mu({n}), inv({n}), xh({n, c});
+    Tensor out({n, c});
+    float* od = out.data_.data();
+    float* xhd = xh.data_.data();
+    for (int64_t i = 0; i < n; ++i) {
+        float m = 0.0f;
+        for (int64_t j = 0; j < c; ++j) m += src[i * c + j];
+        m /= static_cast<float>(c);
+        float v = 0.0f;
+        for (int64_t j = 0; j < c; ++j) {
+            float d = src[i * c + j] - m;
+            v += d * d;
+        }
+        v /= static_cast<float>(c);
+        const float iv = 1.0f / std::sqrt(v + eps);
+        mu[i] = m;
+        inv[i] = iv;
+        for (int64_t j = 0; j < c; ++j) {
+            const float xhn = (src[i * c + j] - m) * iv;
+            xhd[i * c + j] = xhn;
+            od[i * c + j] = xhn * gd_[j] + bd[j];
+        }
+    }
+    auto outv = make_var(std::move(out));
+    maybe_record(outv, {x, gamma, beta},
+                 [x, gamma, beta, mu, inv, xh, n, c](const Tensor& g) {
+                     const float* gd = g.data_.data();
+                     const float* xhd = xh.data_.data();
+                     const float* gm = gamma->data.data_.data();
+                     const float* iv = inv.data_.data();
+                     Tensor dx({n, c}), dgm({c}), dbt({c});
+                     float* dxd = dx.data_.data();
+                     float* dgd = dgm.data_.data();
+                     float* dbd = dbt.data_.data();
+                     // dL/dx per row: (1/s)(a - mean(a) - xh*mean(a*xh)), a = g*gamma
+                     for (int64_t i = 0; i < n; ++i) {
+                         float mean_a = 0.0f, mean_ax = 0.0f;
+                         for (int64_t j = 0; j < c; ++j) {
+                             const float a = gd[i * c + j] * gm[j];
+                             mean_a += a;
+                             mean_ax += a * xhd[i * c + j];
+                         }
+                         mean_a /= static_cast<float>(c);
+                         mean_ax /= static_cast<float>(c);
+                         for (int64_t j = 0; j < c; ++j)
+                             dxd[i * c + j] = (gd[i * c + j] * gm[j] - mean_a -
+                                               xhd[i * c + j] * mean_ax) *
+                                              iv[i];
+                     }
+                     // dL/dgamma = sum_n g*xh, dL/dbeta = sum_n g
+                     for (int64_t j = 0; j < c; ++j) {
+                         float s1 = 0.0f, s2 = 0.0f;
+                         for (int64_t i = 0; i < n; ++i) {
+                             s1 += gd[i * c + j] * xhd[i * c + j];
+                             s2 += gd[i * c + j];
+                         }
+                         dgd[j] = s1;
+                         dbd[j] = s2;
+                     }
+                     x->accumulate_grad(dx);
+                     gamma->accumulate_grad(dgm);
+                     beta->accumulate_grad(dbt);
+                 });
+    return outv;
 }
 
 // --- fused linear ---------------------------------------------------------

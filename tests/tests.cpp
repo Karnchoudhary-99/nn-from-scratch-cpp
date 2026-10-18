@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -469,6 +470,52 @@ TEST(shapes_dataset_sane) {
     }
     // roughly balanced classes
     REQUIRE(ones > 60 && ones < 140);
+}
+
+TEST(mnist_idx_loader_parses_synthetic_file) {
+    // Write a tiny synthetic IDX pair: 3 images of 2x2, labels 0..2.
+    auto write_be32 = [](std::ofstream& f, uint32_t v) {
+        uint8_t b[4] = {static_cast<uint8_t>(v >> 24),
+                        static_cast<uint8_t>(v >> 16),
+                        static_cast<uint8_t>(v >> 8),
+                        static_cast<uint8_t>(v)};
+        f.write(reinterpret_cast<char*>(b), 4);
+    };
+    {
+        std::ofstream f("/tmp/idx_images", std::ios::binary);
+        write_be32(f, 2051);
+        write_be32(f, 3); // count
+        write_be32(f, 2); // rows
+        write_be32(f, 2); // cols
+        uint8_t px[12] = {0, 255, 128, 64, 10, 20, 30, 40, 1, 2, 3, 4};
+        f.write(reinterpret_cast<char*>(px), 12);
+    }
+    {
+        std::ofstream f("/tmp/idx_labels", std::ios::binary);
+        write_be32(f, 2049);
+        write_be32(f, 3);
+        uint8_t lb[3] = {3, 7, 9};
+        f.write(reinterpret_cast<char*>(lb), 3);
+    }
+    auto ds = nn::load_mnist_idx("/tmp/idx_images", "/tmp/idx_labels");
+    REQUIRE(ds.size() == 3);
+    REQUIRE(ds.num_classes == 10);
+    REQUIRE(ds.xs[0].same_shape(nn::Tensor({4})));
+    REQUIRE_NEAR(ds.xs[0][0], 0.0, 1e-6);
+    REQUIRE_NEAR(ds.xs[0][1], 1.0, 1e-6);
+    REQUIRE_NEAR(ds.xs[0][2], 128.0 / 255.0, 1e-5);
+    REQUIRE(ds.ys[0] == 3 && ds.ys[1] == 7 && ds.ys[2] == 9);
+    // bad magic must throw
+    std::ofstream bad("/tmp/idx_bad", std::ios::binary);
+    bad << "junk";
+    bad.close();
+    bool threw = false;
+    try {
+        nn::load_mnist_idx("/tmp/idx_bad", "/tmp/idx_labels");
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    REQUIRE(threw);
 }
 
 // --- serialization tests -------------------------------------------------

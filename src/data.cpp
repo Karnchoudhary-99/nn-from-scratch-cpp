@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <fstream>
 #include <numbers>
 #include <random>
 
@@ -158,6 +160,47 @@ Dataset make_shapes(size_t n, int size, float noise) {
         }
         ds.xs.push_back(std::move(img));
         ds.ys.push_back(c);
+    }
+    return ds;
+}
+
+// Load MNIST from big-endian IDX files, normalised to [0, 1].
+Dataset load_mnist_idx(const std::string& images_path,
+                       const std::string& labels_path) {
+    auto read_be32 = [](std::ifstream& f) {
+        uint8_t b[4];
+        f.read(reinterpret_cast<char*>(b), 4);
+        return (static_cast<uint32_t>(b[0]) << 24) |
+               (static_cast<uint32_t>(b[1]) << 16) |
+               (static_cast<uint32_t>(b[2]) << 8) | b[3];
+    };
+    std::ifstream imgs(images_path, std::ios::binary);
+    std::ifstream lbls(labels_path, std::ios::binary);
+    if (!imgs || !lbls)
+        throw std::runtime_error("load_mnist_idx: cannot open files");
+    if (read_be32(imgs) != 2051 || read_be32(lbls) != 2049)
+        throw std::runtime_error("load_mnist_idx: bad IDX magic");
+
+    const uint32_t n_imgs = read_be32(imgs);
+    const uint32_t rows = read_be32(imgs);
+    const uint32_t cols = read_be32(imgs);
+    const uint32_t n_lbls = read_be32(lbls);
+    if (n_imgs != n_lbls)
+        throw std::runtime_error("load_mnist_idx: image/label count mismatch");
+
+    Dataset ds;
+    ds.num_classes = 10;
+    ds.xs.reserve(n_imgs);
+    ds.ys.reserve(n_imgs);
+    std::vector<uint8_t> px(rows * cols);
+    for (uint32_t i = 0; i < n_imgs; ++i) {
+        imgs.read(reinterpret_cast<char*>(px.data()), px.size());
+        Tensor t({static_cast<int64_t>(rows * cols)});
+        for (size_t j = 0; j < px.size(); ++j) t[j] = px[j] / 255.0f;
+        ds.xs.push_back(std::move(t));
+        uint8_t lbl = 0;
+        lbls.read(reinterpret_cast<char*>(&lbl), 1);
+        ds.ys.push_back(lbl);
     }
     return ds;
 }

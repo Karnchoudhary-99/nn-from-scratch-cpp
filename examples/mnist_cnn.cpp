@@ -84,5 +84,16 @@ int main() {
 
     nn::save_model(model, "/tmp/mnist_cnn.nns1");
     std::printf("checkpoint saved to /tmp/mnist_cnn.nns1\n");
+
+    // Checkpoint round-trip: reload into a fresh model, verify identical acc.
+    nn::MnistCNN fresh;
+    nn::load_model(fresh, "/tmp/mnist_cnn.nns1");
+    const float fresh_acc = nn::accuracy(fresh, test);
+    std::printf("reloaded model test accuracy: %.2f%%\n", fresh_acc * 100.0f);
+    if (fresh_acc != test_acc) {
+        std::printf("CHECKPOINT MISMATCH\n");
+        return 1;
+    }
+    std::printf("checkpoint verified: identical predictions\n");
     return test_acc > gate ? 0 : 1;
 }

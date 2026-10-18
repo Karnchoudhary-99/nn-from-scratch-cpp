@@ -454,6 +454,23 @@ TEST(reshape_v_gradcheck) {
         {small({2, 3, 2}, -1.0f, 1.0f)});
 }
 
+// --- data tests ------------------------------------------------------------
+
+TEST(shapes_dataset_sane) {
+    auto ds = nn::make_shapes(200);
+    REQUIRE(ds.size() == 200);
+    REQUIRE(ds.num_classes == 2);
+    int ones = 0;
+    for (size_t i = 0; i < ds.size(); ++i) {
+        REQUIRE(ds.xs[i].same_shape(nn::Tensor({784})));
+        ones += ds.ys[i];
+        for (int64_t j = 0; j < 784; ++j)
+            REQUIRE(ds.xs[i][j] >= 0.0f && ds.xs[i][j] <= 1.0f);
+    }
+    // roughly balanced classes
+    REQUIRE(ones > 60 && ones < 140);
+}
+
 // --- serialization tests -------------------------------------------------
 
 static std::unique_ptr<nn::Sequential> make_small_mlp() {

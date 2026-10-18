@@ -24,6 +24,10 @@ Dataset make_moons(size_t n, float noise = 0.08f);
 Dataset make_spirals(size_t n, float noise = 0.05f);
 // Gaussian blobs, one per class.
 Dataset make_blobs(size_t n, int classes = 3, float spread = 0.6f);
+// 28x28 images: filled circles (class 0) vs filled squares (class 1),
+// random position/scale/rotation, flattened to [784]. Feeds the CNN demo
+// without any downloads.
+Dataset make_shapes(size_t n, int size = 28, float noise = 0.08f);
 
 struct Batch {
     Tensor X;              // [B, D]

@@ -125,4 +125,41 @@ std::vector<Batch> DataLoader::batches() {
     return out;
 }
 
+Dataset make_shapes(size_t n, int size, float noise) {
+    Dataset ds;
+    ds.num_classes = 2;
+    ds.xs.reserve(n);
+    ds.ys.reserve(n);
+    std::uniform_real_distribution<float> pos(4.0f, size - 5.0f);
+    std::uniform_real_distribution<float> radius(size * 0.16f, size * 0.30f);
+    std::uniform_int_distribution<int> cls(0, 1);
+    std::normal_distribution<float> nz(0.0f, noise);
+
+    for (size_t i = 0; i < n; ++i) {
+        const int c = cls(data_rng());
+        const float cx = pos(data_rng()), cy = pos(data_rng());
+        const float r = radius(data_rng());
+        Tensor img({size * size});
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                const float dx = x - cx, dy = y - cy;
+                bool inside = false;
+                if (c == 0) {
+                    inside = dx * dx + dy * dy <= r * r; // circle
+                } else {
+                    // square rotated 45 deg (diamond) for extra challenge
+                    inside = std::fabs(dx + dy) + std::fabs(dx - dy) <=
+                             2.0f * r * 0.9f;
+                }
+                float v = inside ? 1.0f : 0.0f;
+                v = std::clamp(v + nz(data_rng()), 0.0f, 1.0f);
+                img[y * size + x] = v;
+            }
+        }
+        ds.xs.push_back(std::move(img));
+        ds.ys.push_back(c);
+    }
+    return ds;
+}
+
 } // namespace nn

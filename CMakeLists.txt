@@ -29,6 +29,8 @@ add_nn_example(xor_demo)
 add_nn_example(spiral_demo)
 add_nn_example(cnn_demo)
 add_nn_example(mnist_demo)
+add_nn_example(mnist_cnn)
+add_nn_example(visualize)
 add_nn_example(benchmark)
 
 enable_testing()

@@ -28,3 +28,5 @@ jobs:
         run: ./scripts/download_mnist.sh
       - name: MNIST demo
         run: ./build/mnist_demo
+      - name: MNIST CNN demo (quick smoke)
+        run: MNIST_CNN_QUICK=1 ./build/mnist_cnn

@@ -4,7 +4,8 @@ Build a **complete neural network framework in modern C++** — no PyTorch,
 no TensorFlow, no Eigen. Every line of the math is ours: tensors, an
 autograd engine, layers, losses, optimizers, convolution, normalisation,
 checkpoints, and learning-rate schedules. It trains real models: an MLP
-learns spirals at 98.5% and a small CNN hits 99%+ on a 28x28 shapes dataset.
+learns spirals at 98.5%, a small CNN hits 99%+ on a 28x28 shapes dataset,
+and a CNN classifier reaches 98.99% on MNIST — all from scratch, no libraries.
 
 ## Why this exists
 
@@ -27,21 +28,24 @@ ownership of the math.
 - [x] Data: synthetic datasets (XOR, moons, spirals, blobs, 28x28 shapes) + shuffling DataLoader
 - [x] Training loop: mini-batch, shuffling, accuracy metrics
 - [x] Demos: XOR (100% test acc), spirals (98.5%), CNN on shapes (99.25% test acc)
-- [x] Tests: 33 tests — tensor unit tests, numeric gradient checks for every op, training convergence
+- [x] Tests: 34 tests — tensor unit tests, numeric gradient checks for every op, training convergence, CNN checkpoint round-trip
 - [x] Benchmarks: forward/backward throughput per op (`examples/benchmark.cpp`)
 - [x] Data: MNIST IDX loader (big-endian, no dependencies)
 - [x] Demos: MNIST MLP classifier — 97.3% test accuracy in 61s (5 epochs)
-- [ ] Demos: CNN digit classifier on MNIST, convolution visualisation
+- [x] Demos: MNIST CNN digit classifier — 98.99% test accuracy (3 epochs)
+- [x] Visualisation: learned conv filters + feature maps (`docs/vis/`, `examples/visualize.cpp`)
 
 ## Build
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
-ctest --test-dir build          # 33 tests, all green
+ctest --test-dir build          # 34 tests, all green
 ./build/xor_demo                # MLP learns XOR → 100% test accuracy
 ./build/spiral_demo             # MLP learns two spirals → ~98% test accuracy
 ./build/cnn_demo                # CNN learns circles-vs-squares → 99.25% test accuracy
 ./build/mnist_demo              # MLP on MNIST → 97.3% test accuracy (needs data/)
+./build/mnist_cnn               # CNN on MNIST → 98.99% test accuracy (needs data/; MNIST_CNN_QUICK=1 for a fast smoke run)
+./build/visualize vis           # dump conv filters + feature maps as PPM (needs data/)
 ./build/benchmark               # op throughput numbers
 
 MNIST data (gitignored, one-time download):
@@ -100,6 +104,28 @@ nn::MaxPool2d p1(2);                // -> [N,8,14,14]
 nn::Var h = p1.forward(nn::relu(c1.forward(nn::reshape_v(x, {n,1,28,28}))));
 ```
 
+## What the CNN learns
+
+`examples/visualize.cpp` dumps the trained network's internals as images
+(no dependencies — plain PPM, converted with `scripts/render_vis.py`).
+
+**conv1 filters** (8 learned 5×5 kernels — edge and blob detectors):
+
+![conv1 filters](docs/vis/conv1_filters.png)
+
+**Feature maps for a sample digit** — the input, then conv1's 8 edge-map
+channels, then conv2's 16 higher-level channels:
+
+![digit input](docs/vis/digit_0_input.png)
+![conv1 feature maps](docs/vis/digit_0_conv1_maps.png)
+![conv2 feature maps](docs/vis/digit_0_conv2_maps.png)
+
+```bash
+./build/mnist_cnn            # train first (saves /tmp/mnist_cnn.nns1)
+./build/visualize vis        # dumps PPMs into vis/
+python3 scripts/render_vis.py vis docs/vis
+```
+
 ## Project layout
 
 ```
@@ -107,7 +133,8 @@ include/nn/     public headers (tensor, autograd, layers, conv, optimizers,
                 schedulers, serialization, data, trainer)
 src/            implementations
 tests/          gradient checks + unit tests (CTest)
-examples/       xor_demo, spiral_demo, cnn_demo, benchmark
+examples/       xor_demo, spiral_demo, cnn_demo, mnist_demo, mnist_cnn, visualize, benchmark
+docs/vis/       CNN filter / feature-map visualisations
 ```
 
 ## License

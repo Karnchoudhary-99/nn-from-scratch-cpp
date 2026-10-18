@@ -2,14 +2,18 @@
 // differentiable op, and an end-to-end training convergence test.
 // Zero dependencies — a 30-line harness.
 #include "nn/autograd.hpp"
+#include "nn/conv.hpp"
 #include "nn/data.hpp"
 #include "nn/layers.hpp"
 #include "nn/optimizers.hpp"
+#include "nn/schedulers.hpp"
+#include "nn/serialization.hpp"
 #include "nn/tensor.hpp"
 #include "nn/trainer.hpp"
 
 #include <cmath>
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <stdexcept>
 #include <string>
@@ -266,6 +270,308 @@ TEST(optimizer_sgd_descends) {
     REQUIRE(last < first * 0.01f);
     REQUIRE_NEAR(w->data.at({0, 0}), 3.0, 0.15);
     REQUIRE_NEAR(b->data.at({0}), 1.0, 0.15);
+}
+
+// --- scheduler tests --------------------------------------------------------
+
+TEST(schedulers_step_lr) {
+    nn::Var w = nn::make_var(nn::Tensor::randn({2, 2}));
+    nn::SGD opt({w}, 0.1f);
+    nn::StepLR sched(opt, 2, 0.5f);
+    REQUIRE_NEAR(opt.get_lr(), 0.1, 1e-6);
+    sched.step(); // step 1: no decay yet
+    REQUIRE_NEAR(opt.get_lr(), 0.1, 1e-6);
+    sched.step(); // step 2: 0.1 * 0.5
+    REQUIRE_NEAR(opt.get_lr(), 0.05, 1e-6);
+    sched.step(); // step 3
+    REQUIRE_NEAR(opt.get_lr(), 0.05, 1e-6);
+    sched.step(); // step 4: 0.1 * 0.25
+    REQUIRE_NEAR(opt.get_lr(), 0.025, 1e-6);
+}
+
+TEST(schedulers_cosine_annealing) {
+    nn::Var w = nn::make_var(nn::Tensor::randn({2, 2}));
+    nn::Adam opt({w}, 0.2f);
+    nn::CosineAnnealingLR sched(opt, 10, 0.0f);
+    // t=0 -> lr = 0.2 (initial); after 10 steps lr ~= 0
+    for (int i = 0; i < 5; ++i) sched.step();
+    REQUIRE_NEAR(opt.get_lr(), 0.1, 1e-5); // cos(pi/2) = 0 -> 0.5*(1+0)=0.5
+    for (int i = 0; i < 5; ++i) sched.step();
+    REQUIRE_NEAR(opt.get_lr(), 0.0, 1e-6);
+    sched.step(); // past T_max: stays at lr_min
+    REQUIRE_NEAR(opt.get_lr(), 0.0, 1e-6);
+}
+
+TEST(schedulers_exponential_lr) {
+    nn::Var w = nn::make_var(nn::Tensor::randn({2, 2}));
+    nn::SGD opt({w}, 0.1f);
+    nn::ExponentialLR sched(opt, 0.9f);
+    sched.step();
+    REQUIRE_NEAR(opt.get_lr(), 0.09, 1e-6);
+    sched.step();
+    REQUIRE_NEAR(opt.get_lr(), 0.081, 1e-6);
+}
+
+// --- layernorm tests --------------------------------------------------------
+
+TEST(layernorm_forward) {
+    nn::set_seed(1);
+    nn::Var x = nn::make_var(nn::Tensor({2, 4}, {1, 2, 3, 4, 2, 4, 6, 8}));
+    nn::Var g = nn::make_var(nn::Tensor::ones({4}));
+    nn::Var b = nn::make_var(nn::Tensor::zeros({4}));
+    nn::Var y = nn::layernorm_v(x, g, b, 0.0f);
+    // row 0: mean 2.5, var 1.25, std ~1.118 -> [-1.3416, -0.4472, 0.4472, 1.3416]
+    REQUIRE_NEAR(y->data.at({0, 0}), -1.3416407, 1e-4);
+    REQUIRE_NEAR(y->data.at({0, 3}), 1.3416407, 1e-4);
+    // per-row mean ~0, variance ~1
+    for (int64_t r = 0; r < 2; ++r) {
+        float m = 0.0f, v = 0.0f;
+        for (int64_t j = 0; j < 4; ++j) m += y->data.at({r, j});
+        m /= 4.0f;
+        for (int64_t j = 0; j < 4; ++j) {
+            float d = y->data.at({r, j}) - m;
+            v += d * d;
+        }
+        REQUIRE_NEAR(m, 0.0, 1e-5);
+        REQUIRE_NEAR(v / 4.0f, 1.0, 1e-4);
+    }
+}
+
+TEST(layernorm_gradcheck) {
+    nn::set_seed(3);
+    gradcheck(
+        "layernorm",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(nn::layernorm_v(v[0], v[1], v[2]));
+        },
+        {small({2, 5}, -2.0f, 2.0f), small({5}, 0.5f, 1.5f),
+         small({5}, -0.5f, 0.5f)});
+}
+
+TEST(layernorm_train_recover) {
+    // LayerNorm inside an MLP still trains XOR to convergence.
+    nn::set_seed(11);
+    nn::Sequential model;
+    model.add<nn::Linear>(2, 16);
+    model.add<nn::LayerNorm>(16);
+    model.add<nn::ReLU>();
+    model.add<nn::Linear>(16, 2);
+    auto ds = nn::make_xor(400);
+    nn::DataLoader loader(ds, 32, true);
+    nn::Adam opt(model.parameters(), 1e-2f);
+    auto cfg = nn::TrainConfig{};
+    cfg.epochs = 60;
+    cfg.verbose = false;
+    nn::train_classifier(
+        model, loader, opt,
+        [](nn::Var logits, const std::vector<int>& y) {
+            return nn::cross_entropy(logits, y);
+        },
+        cfg);
+    REQUIRE(nn::accuracy(model, ds) > 0.95f);
+}
+
+// --- conv tests ------------------------------------------------------------
+
+TEST(conv2d_forward_values) {
+    // 1x1x3x3 input, 1 filter 2x2 of ones, no padding, stride 1 -> 1x1x2x2.
+    nn::set_seed(1);
+    nn::Conv2d conv(1, 1, 2);
+    conv.weight->data = nn::Tensor({1, 1, 2, 2}, {1, 1, 1, 1});
+    conv.bias->data = nn::Tensor::zeros({1});
+    nn::Var x = nn::constant(nn::Tensor({1, 1, 3, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9}));
+    nn::Var y = conv.forward(x);
+    REQUIRE(y->data.same_shape(nn::Tensor({1, 1, 2, 2})));
+    // window sums: [[1+2+4+5, 2+3+5+6], [4+5+7+8, 5+6+8+9]] = [[12,16],[24,28]]
+    REQUIRE_NEAR(y->data.at({0, 0, 0, 0}), 12.0, 1e-5);
+    REQUIRE_NEAR(y->data.at({0, 0, 0, 1}), 16.0, 1e-5);
+    REQUIRE_NEAR(y->data.at({0, 0, 1, 0}), 24.0, 1e-5);
+    REQUIRE_NEAR(y->data.at({0, 0, 1, 1}), 28.0, 1e-5);
+}
+
+TEST(conv2d_padding_shapes) {
+    nn::set_seed(2);
+    nn::Conv2d conv(2, 4, 3, 1, 1); // same padding
+    nn::Var x = nn::constant(nn::Tensor::randn({2, 2, 7, 7}));
+    nn::Var y = conv.forward(x);
+    REQUIRE(y->data.same_shape(nn::Tensor({2, 4, 7, 7})));
+    nn::Conv2d conv2(1, 2, 3, 2, 0); // stride 2
+    nn::Var x2 = nn::constant(nn::Tensor::randn({1, 1, 8, 8}));
+    nn::Var y2 = conv2.forward(x2);
+    REQUIRE(y2->data.same_shape(nn::Tensor({1, 2, 3, 3})));
+}
+
+TEST(conv2d_gradcheck) {
+    nn::set_seed(5);
+    gradcheck(
+        "conv2d",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(
+                nn::conv2d_v(v[0], v[1], v[2], 1, 0));
+        },
+        {small({1, 2, 5, 5}, -1.0f, 1.0f), small({2, 2, 3, 3}, -1.0f, 1.0f),
+         small({2}, -0.5f, 0.5f)});
+}
+
+TEST(conv2d_gradcheck_padded_strided) {
+    nn::set_seed(6);
+    gradcheck(
+        "conv2d_pad_stride",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(
+                nn::conv2d_v(v[0], v[1], v[2], 2, 1));
+        },
+        {small({1, 1, 7, 7}, -1.0f, 1.0f), small({1, 1, 3, 3}, -1.0f, 1.0f),
+         small({1}, -0.5f, 0.5f)});
+}
+
+TEST(maxpool2d_forward_and_gradcheck) {
+    nn::MaxPool2d pool(2);
+    nn::Var x = nn::constant(nn::Tensor({1, 1, 4, 4},
+        {1, 5, 2, 3, 4, 8, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16}));
+    nn::Var y = pool.forward(x);
+    REQUIRE(y->data.same_shape(nn::Tensor({1, 1, 2, 2})));
+    REQUIRE_NEAR(y->data.at({0, 0, 0, 0}), 8.0, 1e-6);
+    REQUIRE_NEAR(y->data.at({0, 0, 0, 1}), 7.0, 1e-6);
+    REQUIRE_NEAR(y->data.at({0, 0, 1, 0}), 14.0, 1e-6);
+    REQUIRE_NEAR(y->data.at({0, 0, 1, 1}), 16.0, 1e-6);
+
+    nn::set_seed(8);
+    gradcheck(
+        "maxpool2d",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(nn::maxpool2d_v(v[0], 2, 2));
+        },
+        {small({1, 1, 4, 4}, -2.0f, 2.0f)});
+}
+
+TEST(reshape_v_gradcheck) {
+    nn::set_seed(9);
+    gradcheck(
+        "reshape",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(nn::reshape_v(v[0], {2, 6}));
+        },
+        {small({2, 3, 2}, -1.0f, 1.0f)});
+}
+
+// --- data tests ------------------------------------------------------------
+
+TEST(shapes_dataset_sane) {
+    auto ds = nn::make_shapes(200);
+    REQUIRE(ds.size() == 200);
+    REQUIRE(ds.num_classes == 2);
+    int ones = 0;
+    for (size_t i = 0; i < ds.size(); ++i) {
+        REQUIRE(ds.xs[i].same_shape(nn::Tensor({784})));
+        ones += ds.ys[i];
+        for (int64_t j = 0; j < 784; ++j)
+            REQUIRE(ds.xs[i][j] >= 0.0f && ds.xs[i][j] <= 1.0f);
+    }
+    // roughly balanced classes
+    REQUIRE(ones > 60 && ones < 140);
+}
+
+TEST(mnist_idx_loader_parses_synthetic_file) {
+    // Write a tiny synthetic IDX pair: 3 images of 2x2, labels 0..2.
+    auto write_be32 = [](std::ofstream& f, uint32_t v) {
+        uint8_t b[4] = {static_cast<uint8_t>(v >> 24),
+                        static_cast<uint8_t>(v >> 16),
+                        static_cast<uint8_t>(v >> 8),
+                        static_cast<uint8_t>(v)};
+        f.write(reinterpret_cast<char*>(b), 4);
+    };
+    {
+        std::ofstream f("/tmp/idx_images", std::ios::binary);
+        write_be32(f, 2051);
+        write_be32(f, 3); // count
+        write_be32(f, 2); // rows
+        write_be32(f, 2); // cols
+        uint8_t px[12] = {0, 255, 128, 64, 10, 20, 30, 40, 1, 2, 3, 4};
+        f.write(reinterpret_cast<char*>(px), 12);
+    }
+    {
+        std::ofstream f("/tmp/idx_labels", std::ios::binary);
+        write_be32(f, 2049);
+        write_be32(f, 3);
+        uint8_t lb[3] = {3, 7, 9};
+        f.write(reinterpret_cast<char*>(lb), 3);
+    }
+    auto ds = nn::load_mnist_idx("/tmp/idx_images", "/tmp/idx_labels");
+    REQUIRE(ds.size() == 3);
+    REQUIRE(ds.num_classes == 10);
+    REQUIRE(ds.xs[0].same_shape(nn::Tensor({4})));
+    REQUIRE_NEAR(ds.xs[0][0], 0.0, 1e-6);
+    REQUIRE_NEAR(ds.xs[0][1], 1.0, 1e-6);
+    REQUIRE_NEAR(ds.xs[0][2], 128.0 / 255.0, 1e-5);
+    REQUIRE(ds.ys[0] == 3 && ds.ys[1] == 7 && ds.ys[2] == 9);
+    // bad magic must throw
+    std::ofstream bad("/tmp/idx_bad", std::ios::binary);
+    bad << "junk";
+    bad.close();
+    bool threw = false;
+    try {
+        nn::load_mnist_idx("/tmp/idx_bad", "/tmp/idx_labels");
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    REQUIRE(threw);
+}
+
+// --- serialization tests -------------------------------------------------
+
+static std::unique_ptr<nn::Sequential> make_small_mlp() {
+    auto m = std::make_unique<nn::Sequential>();
+    m->add<nn::Linear>(4, 8);
+    m->add<nn::ReLU>();
+    m->add<nn::Linear>(8, 3);
+    return m;
+}
+
+TEST(serialization_round_trip) {
+    nn::set_seed(7);
+    auto a = make_small_mlp();
+    nn::Tensor x = nn::Tensor::randn({5, 4});
+    nn::Var out_a = a->forward(nn::constant(x));
+    nn::save_model(*a, "/tmp/nn_ckpt_test.nns1");
+
+    nn::set_seed(1234); // different init -> different params
+    auto b = make_small_mlp();
+    nn::Var out_b = b->forward(nn::constant(x));
+    REQUIRE(!std::equal(out_a->data.data_.begin(), out_a->data.data_.end(),
+                        out_b->data.data_.begin()));
+
+    nn::load_model(*b, "/tmp/nn_ckpt_test.nns1");
+    auto pa = a->named_parameters();
+    auto pb = b->named_parameters();
+    REQUIRE(pa.size() == pb.size());
+    for (size_t i = 0; i < pa.size(); ++i) {
+        REQUIRE(pa[i].first == pb[i].first);
+        REQUIRE(pa[i].second->data.same_shape(pb[i].second->data));
+        for (int64_t j = 0; j < pa[i].second->data.numel(); ++j)
+            REQUIRE_NEAR(pa[i].second->data[j], pb[i].second->data[j], 1e-9);
+    }
+    // predictions match after load
+    nn::Var out_b2 = b->forward(nn::constant(x));
+    for (int64_t j = 0; j < out_a->data.numel(); ++j)
+        REQUIRE_NEAR(out_a->data[j], out_b2->data[j], 1e-6);
+}
+
+TEST(serialization_rejects_shape_mismatch) {
+    nn::set_seed(7);
+    auto a = make_small_mlp();
+    nn::save_model(*a, "/tmp/nn_ckpt_test2.nns1");
+    auto b = std::make_unique<nn::Sequential>();
+    b->add<nn::Linear>(4, 16);
+    b->add<nn::ReLU>();
+    b->add<nn::Linear>(16, 3);
+    bool threw = false;
+    try {
+        nn::load_model(*b, "/tmp/nn_ckpt_test2.nns1");
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    REQUIRE(threw);
 }
 
 } // namespace

@@ -20,3 +20,11 @@ jobs:
         run: ./build/xor_demo
       - name: Spiral demo
         run: ./build/spiral_demo
+      - name: CNN demo
+        run: ./build/cnn_demo
+      - name: Benchmark smoke test
+        run: ./build/benchmark
+      - name: Download MNIST
+        run: ./scripts/download_mnist.sh
+      - name: MNIST demo
+        run: ./build/mnist_demo

@@ -5,6 +5,7 @@
 #include "nn/tensor.hpp"
 
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace nn {
@@ -24,6 +25,14 @@ Dataset make_moons(size_t n, float noise = 0.08f);
 Dataset make_spirals(size_t n, float noise = 0.05f);
 // Gaussian blobs, one per class.
 Dataset make_blobs(size_t n, int classes = 3, float spread = 0.6f);
+// 28x28 images: filled circles (class 0) vs filled squares (class 1),
+// random position/scale/rotation, flattened to [784]. Feeds the CNN demo
+// without any downloads.
+Dataset make_shapes(size_t n, int size = 28, float noise = 0.08f);
+// Load MNIST from IDX files (big-endian), normalised to [0, 1].
+// xs are flattened [784]; put files under data/ (gitignored).
+Dataset load_mnist_idx(const std::string& images_path,
+                       const std::string& labels_path);
 
 struct Batch {
     Tensor X;              // [B, D]

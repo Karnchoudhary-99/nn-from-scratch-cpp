@@ -13,6 +13,9 @@ struct Optimizer {
     explicit Optimizer(std::vector<Var> p) : params(std::move(p)) {}
     virtual ~Optimizer() = default;
     virtual void step() = 0;
+    // Schedulers need to read/write the learning rate uniformly.
+    virtual float get_lr() const = 0;
+    virtual void set_lr(float lr) = 0;
     void zero_grad() {
         for (auto& p : params) p->zero_grad();
     }
@@ -26,6 +29,8 @@ struct SGD : Optimizer {
     SGD(std::vector<Var> p, float lr = 0.01f, float momentum = 0.0f,
         float weight_decay = 0.0f);
     void step() override;
+    float get_lr() const override { return lr; }
+    void set_lr(float v) override { lr = v; }
 
 private:
     std::unordered_map<Variable*, Tensor> velocity_;
@@ -41,6 +46,8 @@ struct Adam : Optimizer {
     Adam(std::vector<Var> p, float lr = 1e-3f, float beta1 = 0.9f,
          float beta2 = 0.999f, float eps = 1e-8f, float weight_decay = 0.0f);
     void step() override;
+    float get_lr() const override { return lr; }
+    void set_lr(float v) override { lr = v; }
 
 private:
     std::unordered_map<Variable*, Tensor> m_;

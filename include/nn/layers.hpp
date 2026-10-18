@@ -13,6 +13,11 @@ struct Module {
     virtual ~Module() = default;
     virtual Var forward(Var x) = 0;
     virtual std::vector<Var> parameters() { return {}; }
+    // Flat (name, parameter) view used by serialization; names are
+    // model-specific but stable between save and load on the same arch.
+    virtual std::vector<std::pair<std::string, Var>> named_parameters() {
+        return {};
+    }
 
     void zero_grad() {
         for (auto& p : parameters()) p->zero_grad();
@@ -29,6 +34,9 @@ struct Linear : Module {
     Linear(int in_features, int out_features);
     Var forward(Var x) override;
     std::vector<Var> parameters() override { return {weight, bias}; }
+    std::vector<std::pair<std::string, Var>> named_parameters() override {
+        return {{"weight", weight}, {"bias", bias}};
+    }
 };
 
 struct ReLU : Module {
@@ -51,6 +59,21 @@ struct Dropout : Module {
     Var forward(Var x) override;
 };
 
+// Normalises over the last dim of [N, C] with learnable scale and shift.
+struct LayerNorm : Module {
+    int features;
+    float eps;
+    Var gamma; // [C], init ones
+    Var beta;  // [C], init zeros
+
+    explicit LayerNorm(int features, float eps = 1e-5f);
+    Var forward(Var x) override;
+    std::vector<Var> parameters() override { return {gamma, beta}; }
+    std::vector<std::pair<std::string, Var>> named_parameters() override {
+        return {{"gamma", gamma}, {"beta", beta}};
+    }
+};
+
 // Chains modules: out = m_n(...m_2(m_1(x))).
 struct Sequential : Module {
     std::vector<std::shared_ptr<Module>> layers;
@@ -62,6 +85,7 @@ struct Sequential : Module {
 
     Var forward(Var x) override;
     std::vector<Var> parameters() override;
+    std::vector<std::pair<std::string, Var>> named_parameters() override;
     void train() override;
     void eval() override;
 };

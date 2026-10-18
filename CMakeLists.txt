@@ -10,8 +10,11 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 add_library(nn
     src/tensor.cpp
     src/autograd.cpp
+    src/conv.cpp
     src/layers.cpp
     src/optimizers.cpp
+    src/schedulers.cpp
+    src/serialization.cpp
     src/data.cpp
     src/trainer.cpp
 )
@@ -24,6 +27,9 @@ endfunction()
 
 add_nn_example(xor_demo)
 add_nn_example(spiral_demo)
+add_nn_example(cnn_demo)
+add_nn_example(mnist_demo)
+add_nn_example(benchmark)
 
 enable_testing()
 add_executable(nn_tests tests/tests.cpp)

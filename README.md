@@ -27,20 +27,28 @@ ownership of the math.
 - [x] Data: synthetic datasets (XOR, moons, spirals, blobs, 28x28 shapes) + shuffling DataLoader
 - [x] Training loop: mini-batch, shuffling, accuracy metrics
 - [x] Demos: XOR (100% test acc), spirals (98.5%), CNN on shapes (99.25% test acc)
-- [x] Tests: 32 tests — tensor unit tests, numeric gradient checks for every op, training convergence
+- [x] Tests: 33 tests — tensor unit tests, numeric gradient checks for every op, training convergence
 - [x] Benchmarks: forward/backward throughput per op (`examples/benchmark.cpp`)
-- [ ] Data: MNIST loader (IDX format, no dependencies)
-- [ ] Demos: MNIST digit classifier, CNN visualisation
+- [x] Data: MNIST IDX loader (big-endian, no dependencies)
+- [x] Demos: MNIST MLP classifier — 97.3% test accuracy in 61s (5 epochs)
+- [ ] Demos: CNN digit classifier on MNIST, convolution visualisation
 
 ## Build
 
 ```bash
 cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
-ctest --test-dir build          # 32 tests, all green
+ctest --test-dir build          # 33 tests, all green
 ./build/xor_demo                # MLP learns XOR → 100% test accuracy
 ./build/spiral_demo             # MLP learns two spirals → ~98% test accuracy
 ./build/cnn_demo                # CNN learns circles-vs-squares → 99.25% test accuracy
+./build/mnist_demo              # MLP on MNIST → 97.3% test accuracy (needs data/)
 ./build/benchmark               # op throughput numbers
+
+MNIST data (gitignored, one-time download):
+
+```bash
+./scripts/download_mnist.sh
+```
 ```
 
 ## Benchmarks

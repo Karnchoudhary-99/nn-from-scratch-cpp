@@ -1,4 +1,5 @@
 /build/
-/data/*.idx*
+/data/*
+!/data/.gitkeep
 *.o
 .DS_Store

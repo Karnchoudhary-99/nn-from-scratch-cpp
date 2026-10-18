@@ -6,6 +6,7 @@
 #include "nn/layers.hpp"
 #include "nn/optimizers.hpp"
 #include "nn/schedulers.hpp"
+#include "nn/serialization.hpp"
 #include "nn/tensor.hpp"
 #include "nn/trainer.hpp"
 
@@ -307,6 +308,62 @@ TEST(schedulers_exponential_lr) {
     REQUIRE_NEAR(opt.get_lr(), 0.09, 1e-6);
     sched.step();
     REQUIRE_NEAR(opt.get_lr(), 0.081, 1e-6);
+}
+
+// --- serialization tests -------------------------------------------------
+
+static std::unique_ptr<nn::Sequential> make_small_mlp() {
+    auto m = std::make_unique<nn::Sequential>();
+    m->add<nn::Linear>(4, 8);
+    m->add<nn::ReLU>();
+    m->add<nn::Linear>(8, 3);
+    return m;
+}
+
+TEST(serialization_round_trip) {
+    nn::set_seed(7);
+    auto a = make_small_mlp();
+    nn::Tensor x = nn::Tensor::randn({5, 4});
+    nn::Var out_a = a->forward(nn::constant(x));
+    nn::save_model(*a, "/tmp/nn_ckpt_test.nns1");
+
+    nn::set_seed(1234); // different init -> different params
+    auto b = make_small_mlp();
+    nn::Var out_b = b->forward(nn::constant(x));
+    REQUIRE(!std::equal(out_a->data.data_.begin(), out_a->data.data_.end(),
+                        out_b->data.data_.begin()));
+
+    nn::load_model(*b, "/tmp/nn_ckpt_test.nns1");
+    auto pa = a->named_parameters();
+    auto pb = b->named_parameters();
+    REQUIRE(pa.size() == pb.size());
+    for (size_t i = 0; i < pa.size(); ++i) {
+        REQUIRE(pa[i].first == pb[i].first);
+        REQUIRE(pa[i].second->data.same_shape(pb[i].second->data));
+        for (int64_t j = 0; j < pa[i].second->data.numel(); ++j)
+            REQUIRE_NEAR(pa[i].second->data[j], pb[i].second->data[j], 1e-9);
+    }
+    // predictions match after load
+    nn::Var out_b2 = b->forward(nn::constant(x));
+    for (int64_t j = 0; j < out_a->data.numel(); ++j)
+        REQUIRE_NEAR(out_a->data[j], out_b2->data[j], 1e-6);
+}
+
+TEST(serialization_rejects_shape_mismatch) {
+    nn::set_seed(7);
+    auto a = make_small_mlp();
+    nn::save_model(*a, "/tmp/nn_ckpt_test2.nns1");
+    auto b = std::make_unique<nn::Sequential>();
+    b->add<nn::Linear>(4, 16);
+    b->add<nn::ReLU>();
+    b->add<nn::Linear>(16, 3);
+    bool threw = false;
+    try {
+        nn::load_model(*b, "/tmp/nn_ckpt_test2.nns1");
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    REQUIRE(threw);
 }
 
 } // namespace

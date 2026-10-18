@@ -13,6 +13,11 @@ struct Module {
     virtual ~Module() = default;
     virtual Var forward(Var x) = 0;
     virtual std::vector<Var> parameters() { return {}; }
+    // Flat (name, parameter) view used by serialization; names are
+    // model-specific but stable between save and load on the same arch.
+    virtual std::vector<std::pair<std::string, Var>> named_parameters() {
+        return {};
+    }
 
     void zero_grad() {
         for (auto& p : parameters()) p->zero_grad();
@@ -29,6 +34,9 @@ struct Linear : Module {
     Linear(int in_features, int out_features);
     Var forward(Var x) override;
     std::vector<Var> parameters() override { return {weight, bias}; }
+    std::vector<std::pair<std::string, Var>> named_parameters() override {
+        return {{"weight", weight}, {"bias", bias}};
+    }
 };
 
 struct ReLU : Module {
@@ -62,6 +70,7 @@ struct Sequential : Module {
 
     Var forward(Var x) override;
     std::vector<Var> parameters() override;
+    std::vector<std::pair<std::string, Var>> named_parameters() override;
     void train() override;
     void eval() override;
 };

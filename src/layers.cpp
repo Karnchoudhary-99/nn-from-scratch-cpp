@@ -38,6 +38,14 @@ std::vector<Var> Sequential::parameters() {
     return ps;
 }
 
+std::vector<std::pair<std::string, Var>> Sequential::named_parameters() {
+    std::vector<std::pair<std::string, Var>> ps;
+    for (size_t i = 0; i < layers.size(); ++i)
+        for (auto& [n, p] : layers[i]->named_parameters())
+            ps.push_back({"layers." + std::to_string(i) + "." + n, p});
+    return ps;
+}
+
 void Sequential::train() {
     Module::train();
     for (auto& m : layers) m->train();

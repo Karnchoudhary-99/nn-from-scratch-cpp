@@ -13,6 +13,7 @@ add_library(nn
     src/layers.cpp
     src/optimizers.cpp
     src/schedulers.cpp
+    src/serialization.cpp
     src/data.cpp
     src/trainer.cpp
 )

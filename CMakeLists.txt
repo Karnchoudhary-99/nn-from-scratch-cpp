@@ -10,6 +10,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 add_library(nn
     src/tensor.cpp
     src/autograd.cpp
+    src/conv.cpp
     src/layers.cpp
     src/optimizers.cpp
     src/schedulers.cpp

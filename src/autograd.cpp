@@ -2,6 +2,7 @@
 #include "nn/autograd.hpp"
 
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -310,6 +311,191 @@ Var layernorm_v(Var x, Var gamma, Var beta, float eps) {
                      x->accumulate_grad(dx);
                      gamma->accumulate_grad(dgm);
                      beta->accumulate_grad(dbt);
+                 });
+    return outv;
+}
+
+// --- reshape / conv2d / maxpool --------------------------------------------
+
+Var reshape_v(Var a, std::vector<int64_t> shape) {
+    if (numel_of(shape) != a->data.numel())
+        throw std::invalid_argument("reshape_v: element count mismatch");
+    const std::vector<int64_t> in_shape = a->data.shape();
+    auto outv = make_var(a->data.reshape(shape));
+    maybe_record(outv, {a}, [a, in_shape](const Tensor& g) {
+        a->accumulate_grad(g.reshape(in_shape));
+    });
+    return outv;
+}
+
+namespace {
+
+int64_t conv_out_size(int64_t in, int64_t k, int64_t stride, int64_t pad) {
+    return (in + 2 * pad - k) / stride + 1;
+}
+
+} // namespace
+
+Var conv2d_v(Var x, Var w, Var b, int stride, int padding) {
+    const Tensor& xd = x->data;
+    const Tensor& wd = w->data;
+    const int64_t n = xd.dim(0), ic = xd.dim(1), h = xd.dim(2), ww = xd.dim(3);
+    const int64_t oc = wd.dim(0), k = wd.dim(2);
+    const int64_t oh = conv_out_size(h, k, stride, padding);
+    const int64_t ow = conv_out_size(ww, k, stride, padding);
+    if (oh <= 0 || ow <= 0)
+        throw std::invalid_argument("conv2d_v: kernel larger than input");
+
+    const float* xp = xd.data_.data();
+    const float* wpp = wd.data_.data();
+    const float* bp = b->data.data_.data();
+
+    // Zero-padded input: [N, IC, h+2p, w+2p].
+    const int64_t hp = h + 2 * padding, wpd = ww + 2 * padding;
+    Tensor xpad({n, ic, hp, wpd});
+    float* xpp = xpad.data_.data();
+    for (int64_t bn = 0; bn < n; ++bn)
+        for (int64_t c = 0; c < ic; ++c)
+            for (int64_t i = 0; i < h; ++i)
+                for (int64_t j = 0; j < ww; ++j)
+                    xpp[((bn * ic + c) * hp + (i + padding)) * wpd +
+                        (j + padding)] = xp[((bn * ic + c) * h + i) * ww + j];
+
+    Tensor out({n, oc, oh, ow});
+    float* op = out.data_.data();
+    for (int64_t bn = 0; bn < n; ++bn)
+        for (int64_t o = 0; o < oc; ++o)
+            for (int64_t i = 0; i < oh; ++i)
+                for (int64_t j = 0; j < ow; ++j) {
+                    float acc = bp[o];
+                    for (int64_t c = 0; c < ic; ++c) {
+                        const int64_t xbase =
+                            ((bn * ic + c) * hp + i * stride) * wpd + j * stride;
+                        const int64_t wbase = ((o * ic + c) * k) * k;
+                        for (int64_t a = 0; a < k; ++a)
+                            for (int64_t q = 0; q < k; ++q)
+                                acc += xpp[xbase + a * wpd + q] *
+                                       wpp[wbase + a * k + q];
+                    }
+                    op[((bn * oc + o) * oh + i) * ow + j] = acc;
+                }
+
+    auto outv = make_var(std::move(out));
+    maybe_record(outv, {x, w, b},
+                 [x, w, b, xpad, n, ic, oc, h, ww, hp, wpd, k, stride, padding, oh,
+                  ow](const Tensor& g) {
+                     const float* gd = g.data_.data();
+                     const float* xpp = xpad.data_.data();
+                     const float* wpp = w->data.data_.data();
+
+                     Tensor dxpad({n, ic, hp, wpd});
+                     float* dxp = dxpad.data_.data();
+                     Tensor dw({oc, ic, k, k});
+                     float* dwp = dw.data_.data();
+                     Tensor db({oc});
+                     float* dbp = db.data_.data();
+
+                     for (int64_t bn = 0; bn < n; ++bn)
+                         for (int64_t o = 0; o < oc; ++o)
+                             for (int64_t i = 0; i < oh; ++i)
+                                 for (int64_t j = 0; j < ow; ++j) {
+                                     const float gv =
+                                         gd[((bn * oc + o) * oh + i) * ow + j];
+                                     dbp[o] += gv;
+                                     for (int64_t c = 0; c < ic; ++c) {
+                                         const int64_t xbase =
+                                             ((bn * ic + c) * hp + i * stride) *
+                                                 wpd +
+                                             j * stride;
+                                         const int64_t wbase =
+                                             ((o * ic + c) * k) * k;
+                                         for (int64_t a = 0; a < k; ++a)
+                                             for (int64_t q = 0; q < k; ++q) {
+                                                 dwp[wbase + a * k + q] +=
+                                                     gv * xpp[xbase + a * wpd +
+                                                              q];
+                                                 dxp[xbase + a * wpd + q] +=
+                                                     gv * wpp[wbase + a * k + q];
+                                             }
+                                     }
+                                 }
+                     // Strip the padding from dx.
+                     Tensor dx({n, ic, h, ww});
+                     float* dxd = dx.data_.data();
+                     for (int64_t bn = 0; bn < n; ++bn)
+                         for (int64_t c = 0; c < ic; ++c)
+                             for (int64_t i = 0; i < h; ++i)
+                                 for (int64_t j = 0; j < ww; ++j)
+                                     dxd[((bn * ic + c) * h + i) * ww + j] =
+                                         dxp[((bn * ic + c) * hp +
+                                              (i + padding)) *
+                                                 wpd +
+                                             (j + padding)];
+                     x->accumulate_grad(dx);
+                     w->accumulate_grad(dw);
+                     b->accumulate_grad(db);
+                 });
+    return outv;
+}
+
+Var maxpool2d_v(Var x, int kernel, int stride) {
+    const Tensor& xd = x->data;
+    const int64_t n = xd.dim(0), c = xd.dim(1), h = xd.dim(2), w = xd.dim(3);
+    const int64_t oh = (h - kernel) / stride + 1;
+    const int64_t ow = (w - kernel) / stride + 1;
+    if (oh <= 0 || ow <= 0)
+        throw std::invalid_argument("maxpool2d_v: kernel larger than input");
+
+    const float* xp = xd.data_.data();
+    Tensor out({n, c, oh, ow});
+    Tensor argmax({n, c, oh, ow}); // flat index of max within the window
+    float* op = out.data_.data();
+    float* amp = argmax.data_.data();
+
+    for (int64_t bn = 0; bn < n; ++bn)
+        for (int64_t ch = 0; ch < c; ++ch)
+            for (int64_t i = 0; i < oh; ++i)
+                for (int64_t j = 0; j < ow; ++j) {
+                    float best = -std::numeric_limits<float>::infinity();
+                    int64_t bi = 0;
+                    for (int64_t a = 0; a < kernel; ++a)
+                        for (int64_t q = 0; q < kernel; ++q) {
+                            const float v =
+                                xp[((bn * c + ch) * h + i * stride + a) * w +
+                                   j * stride + q];
+                            if (v > best) {
+                                best = v;
+                                bi = a * kernel + q;
+                            }
+                        }
+                    op[((bn * c + ch) * oh + i) * ow + j] = best;
+                    amp[((bn * c + ch) * oh + i) * ow + j] =
+                        static_cast<float>(bi);
+                }
+
+    auto outv = make_var(std::move(out));
+    maybe_record(outv, {x},
+                 [x, argmax, n, c, h, w, kernel, stride, oh,
+                  ow](const Tensor& g) {
+                     Tensor dx({n, c, h, w});
+                     const float* gd = g.data_.data();
+                     const float* amp = argmax.data_.data();
+                     float* dxd = dx.data_.data();
+                     for (int64_t bn = 0; bn < n; ++bn)
+                         for (int64_t ch = 0; ch < c; ++ch)
+                             for (int64_t i = 0; i < oh; ++i)
+                                 for (int64_t j = 0; j < ow; ++j) {
+                                     const int64_t bi = static_cast<int64_t>(
+                                         amp[((bn * c + ch) * oh + i) * ow +
+                                             j]);
+                                     const int64_t a = bi / kernel;
+                                     const int64_t q = bi % kernel;
+                                     dxd[((bn * c + ch) * h + i * stride + a) *
+                                             w +
+                                         j * stride + q] +=
+                                         gd[((bn * c + ch) * oh + i) * ow + j];
+                                 }
+                     x->accumulate_grad(dx);
                  });
     return outv;
 }

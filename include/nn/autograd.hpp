@@ -65,6 +65,15 @@ Var sum_all(Var a);
 Var mean_all(Var a);
 Var softmax_rows_v(Var a);
 
+// Reshape (flatten etc.): total element count must match.
+Var reshape_v(Var a, std::vector<int64_t> shape);
+
+// 2-D convolution: x [N, C_in, H, W], w [C_out, C_in, K, K], b [C_out].
+Var conv2d_v(Var x, Var w, Var b, int stride, int padding);
+
+// Max pooling: x [N, C, H, W] -> [N, C, floor((H-k)/s)+1, floor((W-k)/s)+1].
+Var maxpool2d_v(Var x, int kernel, int stride);
+
 // Layer normalisation over the last dim: out = (x - mu)/sqrt(var + eps) * g + b.
 // Shapes: x [N, C], gamma [C], beta [C].
 Var layernorm_v(Var x, Var gamma, Var beta, float eps = 1e-5f);

@@ -2,6 +2,7 @@
 // differentiable op, and an end-to-end training convergence test.
 // Zero dependencies — a 30-line harness.
 #include "nn/autograd.hpp"
+#include "nn/conv.hpp"
 #include "nn/data.hpp"
 #include "nn/layers.hpp"
 #include "nn/optimizers.hpp"
@@ -367,6 +368,90 @@ TEST(layernorm_train_recover) {
         },
         cfg);
     REQUIRE(nn::accuracy(model, ds) > 0.95f);
+}
+
+// --- conv tests ------------------------------------------------------------
+
+TEST(conv2d_forward_values) {
+    // 1x1x3x3 input, 1 filter 2x2 of ones, no padding, stride 1 -> 1x1x2x2.
+    nn::set_seed(1);
+    nn::Conv2d conv(1, 1, 2);
+    conv.weight->data = nn::Tensor({1, 1, 2, 2}, {1, 1, 1, 1});
+    conv.bias->data = nn::Tensor::zeros({1});
+    nn::Var x = nn::constant(nn::Tensor({1, 1, 3, 3}, {1, 2, 3, 4, 5, 6, 7, 8, 9}));
+    nn::Var y = conv.forward(x);
+    REQUIRE(y->data.same_shape(nn::Tensor({1, 1, 2, 2})));
+    // window sums: [[1+2+4+5, 2+3+5+6], [4+5+7+8, 5+6+8+9]] = [[12,16],[24,28]]
+    REQUIRE_NEAR(y->data.at({0, 0, 0, 0}), 12.0, 1e-5);
+    REQUIRE_NEAR(y->data.at({0, 0, 0, 1}), 16.0, 1e-5);
+    REQUIRE_NEAR(y->data.at({0, 0, 1, 0}), 24.0, 1e-5);
+    REQUIRE_NEAR(y->data.at({0, 0, 1, 1}), 28.0, 1e-5);
+}
+
+TEST(conv2d_padding_shapes) {
+    nn::set_seed(2);
+    nn::Conv2d conv(2, 4, 3, 1, 1); // same padding
+    nn::Var x = nn::constant(nn::Tensor::randn({2, 2, 7, 7}));
+    nn::Var y = conv.forward(x);
+    REQUIRE(y->data.same_shape(nn::Tensor({2, 4, 7, 7})));
+    nn::Conv2d conv2(1, 2, 3, 2, 0); // stride 2
+    nn::Var x2 = nn::constant(nn::Tensor::randn({1, 1, 8, 8}));
+    nn::Var y2 = conv2.forward(x2);
+    REQUIRE(y2->data.same_shape(nn::Tensor({1, 2, 3, 3})));
+}
+
+TEST(conv2d_gradcheck) {
+    nn::set_seed(5);
+    gradcheck(
+        "conv2d",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(
+                nn::conv2d_v(v[0], v[1], v[2], 1, 0));
+        },
+        {small({1, 2, 5, 5}, -1.0f, 1.0f), small({2, 2, 3, 3}, -1.0f, 1.0f),
+         small({2}, -0.5f, 0.5f)});
+}
+
+TEST(conv2d_gradcheck_padded_strided) {
+    nn::set_seed(6);
+    gradcheck(
+        "conv2d_pad_stride",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(
+                nn::conv2d_v(v[0], v[1], v[2], 2, 1));
+        },
+        {small({1, 1, 7, 7}, -1.0f, 1.0f), small({1, 1, 3, 3}, -1.0f, 1.0f),
+         small({1}, -0.5f, 0.5f)});
+}
+
+TEST(maxpool2d_forward_and_gradcheck) {
+    nn::MaxPool2d pool(2);
+    nn::Var x = nn::constant(nn::Tensor({1, 1, 4, 4},
+        {1, 5, 2, 3, 4, 8, 6, 7, 9, 10, 11, 12, 13, 14, 15, 16}));
+    nn::Var y = pool.forward(x);
+    REQUIRE(y->data.same_shape(nn::Tensor({1, 1, 2, 2})));
+    REQUIRE_NEAR(y->data.at({0, 0, 0, 0}), 8.0, 1e-6);
+    REQUIRE_NEAR(y->data.at({0, 0, 0, 1}), 7.0, 1e-6);
+    REQUIRE_NEAR(y->data.at({0, 0, 1, 0}), 14.0, 1e-6);
+    REQUIRE_NEAR(y->data.at({0, 0, 1, 1}), 16.0, 1e-6);
+
+    nn::set_seed(8);
+    gradcheck(
+        "maxpool2d",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(nn::maxpool2d_v(v[0], 2, 2));
+        },
+        {small({1, 1, 4, 4}, -2.0f, 2.0f)});
+}
+
+TEST(reshape_v_gradcheck) {
+    nn::set_seed(9);
+    gradcheck(
+        "reshape",
+        [](const std::vector<nn::Var>& v) {
+            return nn::sum_all(nn::reshape_v(v[0], {2, 6}));
+        },
+        {small({2, 3, 2}, -1.0f, 1.0f)});
 }
 
 // --- serialization tests -------------------------------------------------

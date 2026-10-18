@@ -2,15 +2,8 @@
 #include "nn/layers.hpp"
 
 #include <cmath>
-#include <random>
 
 namespace nn {
-namespace {
-std::mt19937& dropout_rng() {
-    static std::mt19937 gen(1234);
-    return gen;
-}
-} // namespace
 
 Linear::Linear(int in_features, int out_features) {
     // Kaiming/He init for ReLU-ish nets: w ~ N(0, sqrt(2/fan_in)).

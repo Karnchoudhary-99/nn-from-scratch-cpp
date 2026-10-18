@@ -21,7 +21,7 @@ struct Node {
     std::function<void(const Tensor& grad_out)> backward_fn;
 };
 
-struct Variable {
+struct Variable : std::enable_shared_from_this<Variable> {
     Tensor data;
     Tensor grad; // same shape as data; empty until backward() runs
     std::shared_ptr<Node> creator; // null for leaves / constants

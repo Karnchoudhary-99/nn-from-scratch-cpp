@@ -12,6 +12,7 @@ add_library(nn
     src/autograd.cpp
     src/layers.cpp
     src/optimizers.cpp
+    src/schedulers.cpp
     src/data.cpp
     src/trainer.cpp
 )

@@ -5,6 +5,7 @@
 #include "nn/data.hpp"
 #include "nn/layers.hpp"
 #include "nn/optimizers.hpp"
+#include "nn/schedulers.hpp"
 #include "nn/tensor.hpp"
 #include "nn/trainer.hpp"
 
@@ -266,6 +267,46 @@ TEST(optimizer_sgd_descends) {
     REQUIRE(last < first * 0.01f);
     REQUIRE_NEAR(w->data.at({0, 0}), 3.0, 0.15);
     REQUIRE_NEAR(b->data.at({0}), 1.0, 0.15);
+}
+
+// --- scheduler tests --------------------------------------------------------
+
+TEST(schedulers_step_lr) {
+    nn::Var w = nn::make_var(nn::Tensor::randn({2, 2}));
+    nn::SGD opt({w}, 0.1f);
+    nn::StepLR sched(opt, 2, 0.5f);
+    REQUIRE_NEAR(opt.get_lr(), 0.1, 1e-6);
+    sched.step(); // step 1: no decay yet
+    REQUIRE_NEAR(opt.get_lr(), 0.1, 1e-6);
+    sched.step(); // step 2: 0.1 * 0.5
+    REQUIRE_NEAR(opt.get_lr(), 0.05, 1e-6);
+    sched.step(); // step 3
+    REQUIRE_NEAR(opt.get_lr(), 0.05, 1e-6);
+    sched.step(); // step 4: 0.1 * 0.25
+    REQUIRE_NEAR(opt.get_lr(), 0.025, 1e-6);
+}
+
+TEST(schedulers_cosine_annealing) {
+    nn::Var w = nn::make_var(nn::Tensor::randn({2, 2}));
+    nn::Adam opt({w}, 0.2f);
+    nn::CosineAnnealingLR sched(opt, 10, 0.0f);
+    // t=0 -> lr = 0.2 (initial); after 10 steps lr ~= 0
+    for (int i = 0; i < 5; ++i) sched.step();
+    REQUIRE_NEAR(opt.get_lr(), 0.1, 1e-5); // cos(pi/2) = 0 -> 0.5*(1+0)=0.5
+    for (int i = 0; i < 5; ++i) sched.step();
+    REQUIRE_NEAR(opt.get_lr(), 0.0, 1e-6);
+    sched.step(); // past T_max: stays at lr_min
+    REQUIRE_NEAR(opt.get_lr(), 0.0, 1e-6);
+}
+
+TEST(schedulers_exponential_lr) {
+    nn::Var w = nn::make_var(nn::Tensor::randn({2, 2}));
+    nn::SGD opt({w}, 0.1f);
+    nn::ExponentialLR sched(opt, 0.9f);
+    sched.step();
+    REQUIRE_NEAR(opt.get_lr(), 0.09, 1e-6);
+    sched.step();
+    REQUIRE_NEAR(opt.get_lr(), 0.081, 1e-6);
 }
 
 } // namespace

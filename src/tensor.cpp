@@ -150,16 +150,22 @@ int64_t Tensor::dim(int64_t i) const {
     return shape_[static_cast<size_t>(i)];
 }
 
-float& Tensor::at(std::vector<int64_t> idx) {
-    if (static_cast<int64_t>(idx.size()) != ndim())
+float& Tensor::at(std::initializer_list<int64_t> idx) {
+    if (idx.size() != static_cast<size_t>(ndim()))
         throw std::invalid_argument("index rank mismatch");
-    return data_[static_cast<size_t>(offset_of(strides_, idx))];
+    int64_t off = 0;
+    size_t d = 0;
+    for (auto v : idx) off += v * strides_[d++];
+    return data_[static_cast<size_t>(off)];
 }
 
-float Tensor::at(std::vector<int64_t> idx) const {
-    if (static_cast<int64_t>(idx.size()) != ndim())
+float Tensor::at(std::initializer_list<int64_t> idx) const {
+    if (idx.size() != static_cast<size_t>(ndim()))
         throw std::invalid_argument("index rank mismatch");
-    return data_[static_cast<size_t>(offset_of(strides_, idx))];
+    int64_t off = 0;
+    size_t d = 0;
+    for (auto v : idx) off += v * strides_[d++];
+    return data_[static_cast<size_t>(off)];
 }
 
 Tensor Tensor::reshape(std::vector<int64_t> shape) const {
@@ -185,8 +191,10 @@ Tensor Tensor::transpose2d() const {
     if (ndim() != 2) throw std::invalid_argument("transpose2d needs a 2-D tensor");
     const int64_t r = dim(0), c = dim(1);
     Tensor out({c, r});
+    const float* src = data_.data();
+    float* dst = out.data_.data();
     for (int64_t i = 0; i < r; ++i)
-        for (int64_t j = 0; j < c; ++j) out.at({j, i}) = at({i, j});
+        for (int64_t j = 0; j < c; ++j) dst[j * r + i] = src[i * c + j];
     return out;
 }
 
@@ -210,8 +218,8 @@ Tensor Tensor::slice_rows(int64_t start, int64_t end) const {
         throw std::out_of_range("slice_rows range out of bounds");
     const int64_t c = dim(1);
     Tensor out({end - start, c});
-    for (int64_t i = start; i < end; ++i)
-        for (int64_t j = 0; j < c; ++j) out.at({i - start, j}) = at({i, j});
+    const float* src = data_.data() + start * c;
+    std::copy(src, src + (end - start) * c, out.data_.data());
     return out;
 }
 
@@ -246,11 +254,16 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
         throw std::invalid_argument("matmul needs 2-D tensors");
     const int64_t m = a.dim(0), k = a.dim(1), n = b.dim(1);
     if (b.dim(0) != k) throw std::invalid_argument("matmul inner dimensions mismatch");
-    Tensor out({m, n});
+    Tensor out({m, n}); // zero-filled
+    const float* A = a.data_.data();
+    const float* B = b.data_.data();
+    float* C = out.data_.data();
     for (int64_t i = 0; i < m; ++i) {
         for (int64_t kk = 0; kk < k; ++kk) {
-            const float aik = a.at({i, kk});
-            for (int64_t j = 0; j < n; ++j) out.at({i, j}) += aik * b.at({kk, j});
+            const float aik = A[i * k + kk];
+            float* crow = C + i * n;
+            const float* brow = B + kk * n;
+            for (int64_t j = 0; j < n; ++j) crow[j] += aik * brow[j];
         }
     }
     return out;
@@ -268,17 +281,26 @@ Tensor mean_all(const Tensor& a) {
 
 Tensor sum_rows(const Tensor& a) {
     if (a.ndim() != 2) throw std::invalid_argument("sum_rows needs a 2-D tensor");
-    Tensor out({a.dim(1)});
-    for (int64_t i = 0; i < a.dim(0); ++i)
-        for (int64_t j = 0; j < a.dim(1); ++j) out[j] += a.at({i, j});
+    const int64_t n = a.dim(0), c = a.dim(1);
+    Tensor out({c}); // zero-filled
+    const float* src = a.data_.data();
+    float* dst = out.data_.data();
+    for (int64_t i = 0; i < n; ++i)
+        for (int64_t j = 0; j < c; ++j) dst[j] += src[i * c + j];
     return out;
 }
 
 Tensor sum_cols(const Tensor& a) {
     if (a.ndim() != 2) throw std::invalid_argument("sum_cols needs a 2-D tensor");
-    Tensor out({a.dim(0)});
-    for (int64_t i = 0; i < a.dim(0); ++i)
-        for (int64_t j = 0; j < a.dim(1); ++j) out[i] += a.at({i, j});
+    const int64_t n = a.dim(0), c = a.dim(1);
+    Tensor out({n}); // zero-filled
+    const float* src = a.data_.data();
+    float* dst = out.data_.data();
+    for (int64_t i = 0; i < n; ++i) {
+        float s = 0.0f;
+        for (int64_t j = 0; j < c; ++j) s += src[i * c + j];
+        dst[i] = s;
+    }
     return out;
 }
 
@@ -294,38 +316,44 @@ Tensor tanh_fwd(const Tensor& a) {
 }
 
 Tensor clamp_min(const Tensor& a, float v) {
-    return unary(a, [v](float x) { return x < v ? v : x; });
+    Tensor out(a.shape());
+    for (int64_t i = 0; i < a.numel(); ++i) out[i] = a[i] < v ? v : a[i];
+    return out;
 }
 
 Tensor softmax_rows(const Tensor& a) {
     if (a.ndim() != 2) throw std::invalid_argument("softmax_rows needs a 2-D tensor");
-    Tensor out(a.shape());
     const int64_t n = a.dim(0), c = a.dim(1);
+    Tensor out(a.shape());
+    const float* src = a.data_.data();
+    float* dst = out.data_.data();
     for (int64_t i = 0; i < n; ++i) {
-        float mx = a.at({i, 0});
-        for (int64_t j = 1; j < c; ++j) mx = std::max(mx, a.at({i, j}));
+        float mx = src[i * c];
+        for (int64_t j = 1; j < c; ++j) mx = std::max(mx, src[i * c + j]);
         float s = 0.0f;
         for (int64_t j = 0; j < c; ++j) {
-            const float e = std::exp(a.at({i, j}) - mx);
-            out.at({i, j}) = e;
+            const float e = std::exp(src[i * c + j] - mx);
+            dst[i * c + j] = e;
             s += e;
         }
-        for (int64_t j = 0; j < c; ++j) out.at({i, j}) /= s;
+        for (int64_t j = 0; j < c; ++j) dst[i * c + j] /= s;
     }
     return out;
 }
 
 Tensor log_softmax_rows(const Tensor& a) {
     if (a.ndim() != 2) throw std::invalid_argument("log_softmax_rows needs a 2-D tensor");
-    Tensor out(a.shape());
     const int64_t n = a.dim(0), c = a.dim(1);
+    Tensor out(a.shape());
+    const float* src = a.data_.data();
+    float* dst = out.data_.data();
     for (int64_t i = 0; i < n; ++i) {
-        float mx = a.at({i, 0});
-        for (int64_t j = 1; j < c; ++j) mx = std::max(mx, a.at({i, j}));
+        float mx = src[i * c];
+        for (int64_t j = 1; j < c; ++j) mx = std::max(mx, src[i * c + j]);
         float s = 0.0f;
-        for (int64_t j = 0; j < c; ++j) s += std::exp(a.at({i, j}) - mx);
+        for (int64_t j = 0; j < c; ++j) s += std::exp(src[i * c + j] - mx);
         const float lse = std::log(s);
-        for (int64_t j = 0; j < c; ++j) out.at({i, j}) = a.at({i, j}) - mx - lse;
+        for (int64_t j = 0; j < c; ++j) dst[i * c + j] = src[i * c + j] - mx - lse;
     }
     return out;
 }

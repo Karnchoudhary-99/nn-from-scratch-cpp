@@ -220,11 +220,14 @@ Var softmax_rows_v(Var a) {
         // Jacobian-vector product: s * (g - sum(g*s, axis=1, keep))
         const int64_t n = od.dim(0), c = od.dim(1);
         Tensor ga(od.shape());
+        const float* s = od.data_.data();
+        const float* gg = g.data_.data();
+        float* dst = ga.data_.data();
         for (int64_t i = 0; i < n; ++i) {
             float dot = 0.0f;
-            for (int64_t j = 0; j < c; ++j) dot += g.at({i, j}) * od.at({i, j});
+            for (int64_t j = 0; j < c; ++j) dot += gg[i * c + j] * s[i * c + j];
             for (int64_t j = 0; j < c; ++j)
-                ga.at({i, j}) = od.at({i, j}) * (g.at({i, j}) - dot);
+                dst[i * c + j] = s[i * c + j] * (gg[i * c + j] - dot);
         }
         a->accumulate_grad(unbroadcast(ga, a->data.shape()));
     });
@@ -268,8 +271,9 @@ Var cross_entropy(Var logits, const std::vector<int>& labels) {
     maybe_record(out, {logits}, [logits, saved, labels, n](const Tensor& g) {
         const float scale = g.at({}) / static_cast<float>(n);
         Tensor probs = softmax_rows(saved);
-        for (int64_t i = 0; i < n; ++i)
-            probs.at({i, labels[static_cast<size_t>(i)]}) -= 1.0f;
+        float* pd = probs.data_.data();
+        const int64_t c = probs.dim(1);
+        for (int64_t i = 0; i < n; ++i) pd[i * c + labels[static_cast<size_t>(i)]] -= 1.0f;
         for (auto& v : probs.data_) v *= scale;
         logits->accumulate_grad(probs);
     });

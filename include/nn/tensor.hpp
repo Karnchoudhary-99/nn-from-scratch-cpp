@@ -28,8 +28,8 @@ public:
 
     float& operator[](int64_t i) { return data_[i]; }
     float operator[](int64_t i) const { return data_[i]; }
-    float& at(std::vector<int64_t> idx);
-    float at(std::vector<int64_t> idx) const;
+    float& at(std::initializer_list<int64_t> idx);
+    float at(std::initializer_list<int64_t> idx) const;
 
     bool same_shape(const Tensor& o) const { return shape_ == o.shape_; }
 

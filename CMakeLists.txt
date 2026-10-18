@@ -28,6 +28,7 @@ endfunction()
 add_nn_example(xor_demo)
 add_nn_example(spiral_demo)
 add_nn_example(cnn_demo)
+add_nn_example(benchmark)
 
 enable_testing()
 add_executable(nn_tests tests/tests.cpp)

@@ -358,36 +358,49 @@ Tensor log_softmax_rows(const Tensor& a) {
     return out;
 }
 
+// Sum along `axis`, dropping that dimension.
+Tensor sum_axis_drop(const Tensor& a, int64_t axis) {
+    const int64_t nd = a.ndim();
+    if (axis < 0) axis += nd;
+    if (axis < 0 || axis >= nd) throw std::invalid_argument("sum_axis_drop: bad axis");
+    int64_t pre = 1, post = 1;
+    for (int64_t i = 0; i < axis; ++i) pre *= a.dim(i);
+    for (int64_t i = axis + 1; i < nd; ++i) post *= a.dim(i);
+    const int64_t d = a.dim(axis);
+    std::vector<int64_t> s;
+    for (int64_t i = 0; i < nd; ++i)
+        if (i != axis) s.push_back(a.dim(i));
+    Tensor out(s); // zero-filled
+    const float* src = a.data_.data();
+    float* dst = out.data_.data();
+    for (int64_t i = 0; i < pre; ++i)
+        for (int64_t k = 0; k < d; ++k)
+            for (int64_t j = 0; j < post; ++j)
+                dst[i * post + j] += src[(i * d + k) * post + j];
+    return out;
+}
+
+// Sum along `axis`, keeping it as a size-1 dimension.
+Tensor sum_axis_keep(const Tensor& a, int64_t axis) {
+    const int64_t nd = a.ndim();
+    if (axis < 0) axis += nd;
+    Tensor dropped = sum_axis_drop(a, axis);
+    auto s = dropped.shape();
+    s.insert(s.begin() + static_cast<size_t>(axis), 1);
+    return dropped.reshape(s);
+}
+
 Tensor unbroadcast(const Tensor& grad, const std::vector<int64_t>& shape) {
     if (grad.shape() == shape) return grad;
-    // Sum out leading extra dims, then dims where target has size 1.
     Tensor g = grad;
-    while (static_cast<int64_t>(g.ndim()) > static_cast<int64_t>(shape.size())) {
-        // sum over dim 0
-        if (g.ndim() == 2) {
-            g = sum_rows(g).reshape({1, g.dim(1)});
-        } else if (g.ndim() == 1) {
-            g = sum_all(g); // scalar
-        } else {
-            throw std::invalid_argument("unbroadcast: unsupported rank");
-        }
-    }
-    auto cur = g.shape();
-    for (size_t d = 0; d < shape.size(); ++d) {
-        if (shape[d] == 1 && cur[d] != 1) {
-            if (cur.size() == 2 && d == 0) {
-                g = sum_rows(g).reshape({1, cur[1]});
-            } else if (cur.size() == 2 && d == 1) {
-                g = sum_cols(g).reshape({cur[0], 1});
-            } else if (cur.size() == 1) {
-                g = sum_all(g);
-            } else {
-                throw std::invalid_argument("unbroadcast: unsupported rank");
-            }
-            cur = g.shape();
-        }
-    }
-    return g.reshape(shape);
+    // Collapse leading extra dimensions.
+    while (static_cast<int64_t>(g.ndim()) > static_cast<int64_t>(shape.size()))
+        g = sum_axis_drop(g, 0);
+    // Sum over broadcast (size-1) dimensions.
+    for (size_t d = 0; d < shape.size(); ++d)
+        if (shape[d] == 1 && g.dim(static_cast<int64_t>(d)) != 1)
+            g = sum_axis_keep(g, static_cast<int64_t>(d));
+    return g;
 }
 
 int64_t argmax_row(const Tensor& a, int64_t row) {
